@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>A股监测系统 V9.2 | 双表资金核验版</title>
+<title>A股监测系统 V9.3 | 股债绿色区域估算版</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -36,17 +36,16 @@ body { font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans
 .chart-box-erp { width:100%; height:400px; }
 .chart-box-sentiment { width:100%; height:280px; }
 
-/* 悬浮提示框 */
-.floating-badge {
-    position: absolute; top: 60px; left: 20px;
-    background: rgba(15, 23, 42, 0.9); border: 1px solid rgba(255,255,255,0.15);
-    padding: 10px 16px; border-radius: 8px; backdrop-filter: blur(6px);
-    pointer-events: none; z-index: 10; box-shadow: 0 4px 12px rgba(0,0,0,0.5);
-    display: flex; align-items: center; gap: 12px;
-}
-.floating-badge .f-title { font-size: 13px; color: var(--text); margin-bottom: 0; }
-.floating-badge .f-val { font-size: 20px; font-weight: 800; color: var(--yellow); margin-bottom: 0; }
-.floating-badge .f-desc { font-size: 13px; font-weight: 600; color: var(--yellow); margin-bottom: 0; display:flex; align-items:center;}
+/* 股债比值固定在标题同一行，不覆盖图表 */
+.erp-title-row { justify-content:flex-start; align-items:center; gap:14px; flex-wrap:wrap; }
+.erp-title-row > .erp-heading { color:var(--text); font-size:14px; font-weight:600; white-space:nowrap; }
+.erp-title-row .erp-legend { margin-left:auto; font-size:12px; color:var(--muted); }
+.floating-badge { position:static; background:rgba(15,23,42,.45); border:1px solid rgba(255,255,255,.12); padding:5px 10px; border-radius:8px; display:inline-flex; align-items:center; gap:9px; box-shadow:none; pointer-events:auto; max-width:100%; flex-wrap:wrap; }
+.floating-badge .f-title { font-size:12px; color:var(--text); }
+.floating-badge .f-val { font-size:17px; font-weight:800; color:var(--yellow); }
+.floating-badge .f-desc { font-size:12px; font-weight:600; color:var(--yellow); }
+.erp-guide {font-size:12px;line-height:1.65;color:#94a3b8;margin:2px 0 12px 0;padding:9px 12px;background:rgba(16,185,129,.055);border:1px solid rgba(16,185,129,.18);border-radius:8px;}
+.erp-guide b {color:#34d399;} .erp-guide strong {color:#e2e8f0;}
 
 /* 宏观资金雷达面板 */
 .macro-radar-panel { display:grid; grid-template-columns: 1fr 1fr 2fr; gap:12px; margin-bottom:16px; }
@@ -234,7 +233,7 @@ body { font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans
 <body>
 <div class="container">
   <div class="header">
-    <h1>📊 基金监测系统 <span>V9.2 数据核验整合版</span></h1>
+    <h1>📊 基金监测系统 <span>V9.2 绿色区域估算版</span></h1>
     <div class="header-right">
       <span><span class="dot" id="statusDot"></span><span id="updateTime">初始化...</span></span>
       <button class="btn" onclick="exportSignals()">📥 导出CSV</button>
@@ -248,16 +247,16 @@ body { font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans
   <div class="macro-charts-container">
     <!-- 图1：股债性价比 (独占一行) -->
     <div class="chart-card">
-      <div class="chart-title">
-        <span>📉 股债ETF归一化比值（非股债风险溢价）</span>
-        <span style="color:var(--red)">红线:沪深300ETF | 蓝线:国债ETF | 金线:归一化比值 | 区间线仅为历史相对位置</span>
+      <div class="chart-title erp-title-row">
+        <span class="erp-heading">📉 股债ETF归一化比值（非股债风险溢价）</span>
+        <div class="floating-badge" id="erpFloatingBadge" aria-label="当前股债比位置">
+          <span class="f-title">当前股债比位置</span>
+          <span class="f-val" id="fbVal">--</span>
+          <span class="f-desc" id="fbDesc" style="color:var(--yellow)">正在计算...</span>
+        </div>
+        <span class="erp-legend" style="color:var(--red)">红线:沪深300ETF | 蓝线:国债ETF | 金线:归一化比值 | 绿区:历史低位参考</span>
       </div>
-      <!-- 悬浮提示框 (图4样式) -->
-      <div class="floating-badge" id="erpFloatingBadge">
-        <div class="f-title">当前股债比位置</div>
-        <div class="f-val" id="fbVal">--</div>
-        <div class="f-desc" id="fbDesc" style="color:var(--yellow)">正在计算...</div>
-      </div>
+      <div id="erpGuide" class="erp-guide">正在计算绿色历史低位参考区……</div>
       <div id="erpChart" class="chart-box-erp"></div>
     </div>
 
@@ -516,21 +515,29 @@ function initERPChart() {
     var greenLineVal = ratioMin * 1.25; // 大底区
     var redLineVal = ratioMax * 0.90; // 高估区
 
-    var lastHs300 = hs300DataRaw[hs300DataRaw.length - 1].val;
-    var lastNormBond = normBond[normBond.length - 1];
-    var targetNormHs300 = greenLineVal * lastNormBond;
-    var targetHs300 = targetNormHs300 * baseHs300;
-    var dropPct = (targetHs300 - lastHs300) / lastHs300 * 100;
+    // 绿色区域只表示样本比值低位；按“国债ETF归一化价格不变”做条件估算。
+    // 这不是沪深300指数点位预测，也不是未来一定见底的保证。
+    var dropToGreenPct = (greenLineVal / lastRatio - 1) * 100;
+    var lastStockETFPrice = hs300DataRaw.find(function(x){return x.date === lastDate;});
+    var estETFPrice = lastStockETFPrice ? lastStockETFPrice.val * greenLineVal / lastRatio : null;
+    var guideEl = document.getElementById('erpGuide');
+    var greenInfo = '🟢 <b>绿色参考区域</b>：归一化股债比 ≤ <strong>' + greenLineVal.toFixed(3) + '</strong>';
+    var estimateInfo = lastRatio > greenLineVal
+      ? '｜距离绿区上沿：股债比约需变化 <strong>' + dropToGreenPct.toFixed(1) + '%</strong>'
+      : '｜<strong>当前已进入绿色参考区</strong>';
+    var etfInfo = estETFPrice !== null && isFinite(estETFPrice)
+      ? '｜假设国债ETF价格不变，沪深300ETF对应价格约 <strong>' + estETFPrice.toFixed(3) + '</strong>（仅条件换算）'
+      : '';
+    guideEl.innerHTML = greenInfo + estimateInfo + etfInfo + '。<span style="color:#94a3b8">绿区是历史样本相对低位，不保证市场止跌；债券价格变化时估算随之改变。</span>';
 
     if (lastRatio <= greenLineVal) {
-        descEl.innerHTML = `🟢 比值位于样本低位（非估值结论） <span style="color:var(--muted); font-size:12px; margin-left:8px;">(最新: ${dateFormatted})</span>`;
+        descEl.textContent = '🟢 已进入绿色参考区 · 最新 ' + dateFormatted;
         descEl.style.color = 'var(--green)';
     } else if (lastRatio >= redLineVal) {
-        descEl.innerHTML = `🔴 比值位于样本高位（非估值结论） <span style="color:var(--muted); font-size:12px; margin-left:8px;">(最新: ${dateFormatted})</span>`;
+        descEl.textContent = '🔴 样本高位 · 距绿区 ' + dropToGreenPct.toFixed(1) + '% · 最新 ' + dateFormatted;
         descEl.style.color = 'var(--red)';
     } else {
-        var dropText = '（不能据此推算指数底部）';
-        descEl.innerHTML = `🟡 样本中间区间${dropText} <span style="color:var(--muted); font-size:12px; margin-left:8px;">(最新: ${dateFormatted})</span>`;
+        descEl.textContent = '🟡 样本中间区间 · 距绿区 ' + dropToGreenPct.toFixed(1) + '% · 最新 ' + dateFormatted;
         descEl.style.color = 'var(--yellow)';
     }
 
@@ -570,7 +577,7 @@ function initERPChart() {
           markLine: { 
               symbol: ['none', 'none'], 
               data: [
-                  { yAxis: greenLineVal, lineStyle: { color: '#10b981', type: 'dashed', width: 1 } }, // 绿线
+                  { yAxis: greenLineVal, name: '绿区上沿', lineStyle: { color: '#10b981', type: 'dashed', width: 1 } }, // 绿线
                   { yAxis: redLineVal, lineStyle: { color: '#ef4444', type: 'dashed', width: 1 } } // 红线
               ] 
           },
@@ -591,7 +598,7 @@ function initSentimentChart() {
   // 将 Excel 独立核验的宽广度与接口历史按日期并列展示；不将 Excel 数据伪装为实时接口。
   var merged = {};
   getMarketHistory().filter(validHistoryRecord).forEach(function(h){
-    merged[h.date] = {date:h.date,breadth:Number(h.breadth),flow:Number(h.flow),indices:h.indices,source:'observed'};
+    merged[h.date] = {date:h.date,breadth:h.breadth==null?null:Number(h.breadth),flow:Number(h.flow),indices:h.indices,source:'observed'};
   });
   var audits=auditStore();
   Object.keys(audits).forEach(function(date){
@@ -642,7 +649,7 @@ function initSentimentChart() {
             var flowStr = h.flow===null ? '暂无已验证数据' : parseFloat(h.flow).toFixed(1);
             html += '<div style="font-size:12px;line-height:1.6;">';
             html += '主力净流入: <strong style="color:' + (parseFloat(flowStr) >= 0 ? '#ef4444' : '#10b981') + '">' + flowStr + (h.flow===null?'':' 亿') + '</strong><br/>';
-            html += '市场宽广度 ('+(h.source==='excel'?'Excel':'接口')+'): <strong style="color:#3b82f6">' + h.breadth.toFixed(1) + '%</strong>';
+            html += '市场宽广度 ('+(h.source==='excel'?'Excel':'接口')+'): <strong style="color:#3b82f6">' + (h.breadth===null?'暂无已核验数据':h.breadth.toFixed(1)+'%') + '</strong>';
             if(h.excelBreadth!==undefined)html += '<br/>Excel宽广度: '+h.excelBreadth.toFixed(2)+'%';
             if(audits[h.date]&&Number.isFinite(Number(audits[h.date].flowNetYi)))html += '<br/>Excel全市场主力净额: '+Number(audits[h.date].flowNetYi).toFixed(2)+'亿（独立口径）';
             html += '</div>';
@@ -696,13 +703,21 @@ function getMarketHistory() {
 }
 function validHistoryRecord(h) {
   return h && /^\d{4}-\d{2}-\d{2}$/.test(h.date) && h.source==='observed' &&
-    Number.isFinite(Number(h.breadth)) && Number(h.breadth)>=0 && Number(h.breadth)<=100 &&
-    Number.isFinite(Number(h.flow)) && Math.abs(Number(h.flow))<1000000;
+    Number.isFinite(Number(h.flow)) && Math.abs(Number(h.flow))<1000000 &&
+    (h.breadth===null || h.breadth===undefined ||
+      (Number.isFinite(Number(h.breadth)) && Number(h.breadth)>=0 && Number(h.breadth)<=100));
 }
 function persistHistory(history) {
-  history=history.filter(validHistoryRecord).sort(function(a,b){return a.date.localeCompare(b.date);});
-  var byDate={}; history.forEach(function(h){byDate[h.date]=h;});
-  localStorage.setItem(MARKET_HISTORY_KEY,JSON.stringify(Object.keys(byDate).sort().map(function(d){return byDate[d];})));
+  var byDate={};
+  history.filter(validHistoryRecord).sort(function(a,b){return a.date.localeCompare(b.date);}).forEach(function(h){
+    var prev=byDate[h.date];
+    if(prev && (h.breadth===null || h.breadth===undefined) && prev.breadth!==null && prev.breadth!==undefined){
+      h=Object.assign({},h,{breadth:prev.breadth,indices:prev.indices});
+    }
+    byDate[h.date]=h;
+  });
+  var ordered=Object.keys(byDate).sort().slice(-22).map(function(d){return byDate[d];});
+  localStorage.setItem(MARKET_HISTORY_KEY,JSON.stringify(ordered));
 }
 function exportMarketHistory() {
   var payload={format:'a-share-market-history-v2',exportedAt:new Date().toISOString(),records:getMarketHistory()};
@@ -711,24 +726,44 @@ function exportMarketHistory() {
   a.href=url; a.download='A股市场历史备份_'+cnNow().date+'.json'; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(function(){URL.revokeObjectURL(url);},1000);
 }
+// 资金日K本身带交易日：允许补录接口真实返回的历史交易日，不依赖广度接口。
+// 宽广度缺少行情日期：仅在当天北京时间15:30后附加，不能回填过去的日期。
+function saveFlowHistorySamples(samples,run) {
+  if(run!==marketRefreshId)return;
+  var today=cnNow(), old=getMarketHistory(), byDate={};
+  old.filter(validHistoryRecord).forEach(function(h){byDate[h.date]=h;});
+  var added=0;
+  samples.forEach(function(sample){
+    if(!sample || !/^\d{4}-\d{2}-\d{2}$/.test(sample.date) || sample.date>today.date ||
+      !Number.isFinite(sample.flow) || Math.abs(sample.flow)>=1000000)return;
+    var existing=byDate[sample.date];
+    byDate[sample.date]={date:sample.date,flow:sample.flow,
+      breadth:existing&&existing.breadth!==undefined?existing.breadth:null,
+      indices:existing?existing.indices:undefined,source:'observed',
+      quality:'dated_flow_kline',sampledAt:new Date().toISOString(),
+      note:'东方财富指数资金日K日期；与Excel全市场主力净额不同口径'};
+    added++;
+  });
+  if(!added){setHistoryStatus('资金接口未返回可核验的历史日期与金额；未写入');return;}
+  try {persistHistory(Object.values(byDate));tryRecordMarketHistory();initSentimentChart();
+    setHistoryStatus('已按资金日K日期保存/更新 '+added+' 条，滚动保留最近 '+getMarketHistory().length+' 个交易日（广度另行校验）');
+  } catch(e){setHistoryStatus('资金历史保存失败，请检查浏览器存储');console.error(e);}
+}
 function tryRecordMarketHistory() {
-  if(!radarSample || !flowSample || radarSample.run!==marketRefreshId || flowSample.run!==marketRefreshId)return;
+  if(!radarSample || radarSample.run!==marketRefreshId)return;
   var cn=cnNow();
-  var weekday=new Date(cn.date+'T12:00:00+08:00').getUTCDay();
-  if(weekday===0||weekday===6){setHistoryStatus('非交易日：不写入');return;}
-  if(cn.hour<15 || (cn.hour===15 && cn.minute<30)){setHistoryStatus('未到北京时间15:30：仅显示，不写入收盘历史');return;}
-  if(flowSample.date!==cn.date){setHistoryStatus('资金接口日期与北京时间不符：不写入');return;}
-  if(Math.abs(radarSample.ts-flowSample.ts)>120000){setHistoryStatus('资金与广度采样相隔超过2分钟：不写入');return;}
-  var breadth=radarSample.breadth, flow=flowSample.flow;
-  if(!Number.isFinite(breadth)||breadth<0||breadth>100||!Number.isFinite(flow))return;
-  var rec={date:cn.date,breadth:Number(breadth.toFixed(1)),flow:Number(flow.toFixed(1)),indices:radarSample.indices,source:'observed',
-    quality:'post_close_unverified',sampledAt:new Date().toISOString(),note:'收盘后浏览器采样；指数涨跌家数接口无行情日期，未核验其交易日'};
+  if(cn.hour<15 || (cn.hour===15 && cn.minute<30))return;
+  if(!flowSample || flowSample.run!==marketRefreshId || flowSample.date!==cn.date)return;
+  if(Math.abs(radarSample.ts-flowSample.ts)>120000)return;
+  var breadth=radarSample.breadth;
+  if(!Number.isFinite(breadth)||breadth<0||breadth>100)return;
   try {
-    var old=getMarketHistory(), index=old.findIndex(function(h){return h.date===rec.date;});
-    if(index>=0)old[index]=rec;else old.push(rec);
-    persistHistory(old); initSentimentChart();
-    setHistoryStatus('已保存 '+rec.date+' 收盘后采样（未核验广度接口日期），累计 '+getMarketHistory().length+' 天');
-  } catch(e){setHistoryStatus('保存失败：请检查浏览器存储空间');console.error(e);}
+    var old=getMarketHistory(), rec=old.find(function(h){return h.date===cn.date;});
+    if(!rec)return; // 不为缺失的资金历史伪造记录
+    rec.breadth=Number(breadth.toFixed(1));rec.indices=radarSample.indices;
+    rec.breadthQuality='post_close_date_unverified';
+    persistHistory(old);initSentimentChart();
+  } catch(e){console.error(e);}
 }
 
 // ================= 市场资金雷达 =================
@@ -821,10 +856,19 @@ function fetchMarketRadar() {
 
 // ================= 情绪与资金数据获取 =================
 function fetchSentimentData() {
+  var run=marketRefreshId;
   var flowCb = 'flow_cb_' + Date.now();
   window[flowCb] = function(data) {
     try {
       if (data && data.data && data.data.klines && data.data.klines.length > 0) {
+        var samples=data.data.klines.map(function(line){
+          var fields=String(line).split(',');
+          var date=String(fields[0]||'').slice(0,10);
+          var amount=Number(fields[1]);
+          return {date:date,flow:amount/100000000};
+        }).filter(function(v){return /^\d{4}-\d{2}-\d{2}$/.test(v.date)&&Number.isFinite(v.flow);});
+        if(run!==marketRefreshId)return;
+        saveFlowHistorySamples(samples,run);
         var latest = data.data.klines[data.data.klines.length - 1].split(',');
         var mainFlow = parseFloat(latest[1]);
         var flowYi = (mainFlow / 100000000).toFixed(1);
@@ -844,7 +888,7 @@ function fetchSentimentData() {
   };
   var s1 = document.createElement('script');
   s1.id = flowCb;
-  s1.src = 'https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?cb=' + flowCb + '&lmt=1&klt=101&secid=1.000001&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65';
+  s1.src = 'https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?cb=' + flowCb + '&lmt=35&klt=101&secid=1.000001&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65';
   document.body.appendChild(s1);
 
   var todayStr = cnNow().date.replace(/-/g, '');
@@ -1578,7 +1622,7 @@ async function refreshAll() {
 
   cleanOldCache();
   marketRefreshId++; radarSample=null; flowSample=null;
-  setHistoryStatus('等待两路行情及收盘时间校验…');
+  setHistoryStatus('正在尝试读取资金日K历史（独立保存，不等待广度）…');
   fetchMarketRadar();
   fetchSentimentData();
   initERPChart(); 
