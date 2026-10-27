@@ -854,11 +854,22 @@ function fetchMarketRadar() {
   document.body.appendChild(script);
 }
 
+// 资金接口失败时只提示失败；Excel独立口径仅作已核验的参考，不冒充实时值。
+function markFlowFetchFailure(run, reason) {
+  if(run!==marketRefreshId)return;
+  var val=document.getElementById('stMainFlow'), desc=document.getElementById('stMainFlowDesc');
+  val.textContent='抓取失败';val.style.color='var(--yellow)';
+  desc.textContent=(reason||'资金接口无有效数据')+' · 可稍后点「手动刷新」重试';
+  setHistoryStatus('资金接口抓取失败；历史数据未修改，稍后可手动刷新重试');
+}
 // ================= 情绪与资金数据获取 =================
 function fetchSentimentData() {
   var run=marketRefreshId;
   var flowCb = 'flow_cb_' + Date.now();
+  var flowFinished=false;
+  var flowTimeout=setTimeout(function(){if(flowFinished)return;flowFinished=true;markFlowFetchFailure(run,'请求超时');delete window[flowCb];var old=document.getElementById(flowCb);if(old)old.remove();},12000);
   window[flowCb] = function(data) {
+    if(flowFinished)return;flowFinished=true;clearTimeout(flowTimeout);
     try {
       if (data && data.data && data.data.klines && data.data.klines.length > 0) {
         var samples=data.data.klines.map(function(line){
@@ -881,13 +892,14 @@ function fetchSentimentData() {
           flowSample={run:marketRefreshId,ts:Date.now(),date:flowDate,flow:Number(flowYi)};
           tryRecordMarketHistory();
         } else {setHistoryStatus('资金接口缺少有效行情日期：不写入');}
-      }
-    } catch(e) {}
+      } else {markFlowFetchFailure(run,'接口未返回资金日K');}
+    } catch(e) {markFlowFetchFailure(run,'资金数据解析失败');console.warn('资金接口解析失败',e);}
     delete window[flowCb];
     var s = document.getElementById(flowCb); if (s) s.remove();
   };
   var s1 = document.createElement('script');
   s1.id = flowCb;
+  s1.onerror=function(){if(flowFinished)return;flowFinished=true;clearTimeout(flowTimeout);markFlowFetchFailure(run,'接口连接失败');delete window[flowCb];s1.remove();};
   s1.src = 'https://push2.eastmoney.com/api/qt/stock/fflow/kline/get?cb=' + flowCb + '&lmt=35&klt=101&secid=1.000001&fields1=f1,f2,f3,f7&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65';
   document.body.appendChild(s1);
 
@@ -1622,6 +1634,8 @@ async function refreshAll() {
 
   cleanOldCache();
   marketRefreshId++; radarSample=null; flowSample=null;
+  document.getElementById('stMainFlow').textContent='抓取中…';
+  document.getElementById('stMainFlowDesc').textContent='正在尝试获取东方财富资金流向';
   setHistoryStatus('正在尝试读取资金日K历史（独立保存，不等待广度）…');
   fetchMarketRadar();
   fetchSentimentData();
