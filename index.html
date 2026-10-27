@@ -228,6 +228,10 @@ body { font-family:-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans
     <div class="header-right">
       <span><span class="dot" id="statusDot"></span><span id="updateTime">初始化...</span></span>
       <button class="btn" onclick="exportSignals()">📥 导出CSV</button>
+      <button class="btn" onclick="exportMarketHistory()">💾 备份历史</button>
+      <button class="btn" onclick="document.getElementById('marketHistoryFile').click()">📂 导入历史</button>
+      <input id="marketHistoryFile" type="file" accept=".json,application/json" style="display:none" onchange="importMarketHistory(this)">
+      <span id="historySaveStatus" style="font-size:11px;color:var(--muted)">历史记录待采样</span>
       <button class="btn" onclick="refreshAll()">🔄 手动刷新</button>
     </div>
   </div>
@@ -553,8 +557,7 @@ function initSentimentChart() {
   var chartDom = document.getElementById('sentimentChart');
   if (!sentimentChartInstance) sentimentChartInstance = echarts.init(chartDom, 'dark');
   
-  var historyStr = localStorage.getItem('marketSentimentHistory');
-  var history = historyStr ? JSON.parse(historyStr) : [];
+  var history = getMarketHistory();
   
   // 历史数据不足时不虚构记录；仅显示真实已保存的采样。
   history = history.filter(function(h) { return h && h.date && Number.isFinite(Number(h.breadth)) && Number.isFinite(Number(h.flow)) && h.source === 'observed'; });
@@ -562,7 +565,7 @@ function initSentimentChart() {
   history = history.slice(-22);
   if (!history.length) {
     sentimentChartInstance.clear();
-    sentimentChartInstance.setOption({title:{text:'暂无已验证的历史样本',subtext:'从现在起记录真实获取的数据；不会生成模拟历史',left:'center',top:'middle',textStyle:{color:'#94a3b8',fontSize:15},subtextStyle:{color:'#64748b'}}});
+    sentimentChartInstance.setOption({title:{text:'暂无收盘后历史采样',subtext:'仅记录收盘后、日期可匹配的采样；不生成模拟历史',left:'center',top:'middle',textStyle:{color:'#94a3b8',fontSize:15},subtextStyle:{color:'#64748b'}}});
     return;
   }
 
@@ -632,29 +635,74 @@ function initSentimentChart() {
   sentimentChartInstance.setOption(option);
 }
 
-// 记录当天真实情绪数据
-function recordSentimentData(breadth, flowYi, indicesData) {
+// 历史记录只存于当前浏览器；导出备份可防止清理网站数据造成丢失。
+var MARKET_HISTORY_KEY = 'marketSentimentHistory';
+var marketRefreshId = 0;
+var radarSample = null;
+var flowSample = null;
+function cnNow() {
+  var parts = new Intl.DateTimeFormat('en-CA', {timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());
+  var v = {}; parts.forEach(function(p){v[p.type]=p.value;});
+  return {date:v.year+'-'+v.month+'-'+v.day, hour:Number(v.hour),minute:Number(v.minute)};
+}
+function setHistoryStatus(msg) {
+  var el = document.getElementById('historySaveStatus'); if(el) el.textContent = msg;
+}
+function getMarketHistory() {
+  try {var a=JSON.parse(localStorage.getItem(MARKET_HISTORY_KEY)||'[]'); return Array.isArray(a)?a:[];} catch(e){return [];}
+}
+function validHistoryRecord(h) {
+  return h && /^\d{4}-\d{2}-\d{2}$/.test(h.date) && h.source==='observed' &&
+    Number.isFinite(Number(h.breadth)) && Number(h.breadth)>=0 && Number(h.breadth)<=100 &&
+    Number.isFinite(Number(h.flow)) && Math.abs(Number(h.flow))<1000000;
+}
+function persistHistory(history) {
+  history=history.filter(validHistoryRecord).sort(function(a,b){return a.date.localeCompare(b.date);});
+  var byDate={}; history.forEach(function(h){byDate[h.date]=h;});
+  localStorage.setItem(MARKET_HISTORY_KEY,JSON.stringify(Object.keys(byDate).sort().map(function(d){return byDate[d];})));
+}
+function exportMarketHistory() {
+  var payload={format:'a-share-market-history-v2',exportedAt:new Date().toISOString(),records:getMarketHistory()};
+  var blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+  var url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url; a.download='A股市场历史备份_'+cnNow().date+'.json'; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){URL.revokeObjectURL(url);},1000);
+}
+function importMarketHistory(input) {
+  var file=input.files&&input.files[0]; if(!file)return;
+  if(file.size>5*1024*1024){alert('文件超过5MB，已拒绝导入');input.value='';return;}
+  var reader=new FileReader(); reader.onload=function(){
+    try {
+      var obj=JSON.parse(reader.result);
+      if(!obj || obj.format!=='a-share-market-history-v2' || !Array.isArray(obj.records))throw Error('备份格式不匹配');
+      if(obj.records.length>10000 || obj.records.some(function(h){return !validHistoryRecord(h);} ))throw Error('存在无效记录');
+      var existing=getMarketHistory(), map={};
+      existing.filter(validHistoryRecord).forEach(function(h){map[h.date]=h;});
+      obj.records.forEach(function(h){if(!map[h.date])map[h.date]=h;}); // 保留本机同日期数据
+      persistHistory(Object.keys(map).map(function(k){return map[k];}));
+      initSentimentChart(); setHistoryStatus('已导入历史，共 '+getMarketHistory().length+' 天');
+      alert('历史记录已合并；同日期优先保留本机数据。');
+    }catch(e){alert('导入失败：'+e.message);} input.value='';
+  }; reader.readAsText(file);
+}
+function tryRecordMarketHistory() {
+  if(!radarSample || !flowSample || radarSample.run!==marketRefreshId || flowSample.run!==marketRefreshId)return;
+  var cn=cnNow();
+  var weekday=new Date(cn.date+'T12:00:00+08:00').getUTCDay();
+  if(weekday===0||weekday===6){setHistoryStatus('非交易日：不写入');return;}
+  if(cn.hour<15 || (cn.hour===15 && cn.minute<30)){setHistoryStatus('未到北京时间15:30：仅显示，不写入收盘历史');return;}
+  if(flowSample.date!==cn.date){setHistoryStatus('资金接口日期与北京时间不符：不写入');return;}
+  if(Math.abs(radarSample.ts-flowSample.ts)>120000){setHistoryStatus('资金与广度采样相隔超过2分钟：不写入');return;}
+  var breadth=radarSample.breadth, flow=flowSample.flow;
+  if(!Number.isFinite(breadth)||breadth<0||breadth>100||!Number.isFinite(flow))return;
+  var rec={date:cn.date,breadth:Number(breadth.toFixed(1)),flow:Number(flow.toFixed(1)),indices:radarSample.indices,source:'observed',
+    quality:'post_close_unverified',sampledAt:new Date().toISOString(),note:'收盘后浏览器采样；指数涨跌家数接口无行情日期，未核验其交易日'};
   try {
-    var todayStr = new Date().toISOString().slice(0, 10);
-    var historyStr = localStorage.getItem('marketSentimentHistory');
-    var history = historyStr ? JSON.parse(historyStr) : [];
-    
-    var todayIndex = -1;
-    for(var i = 0; i < history.length; i++) {
-      if (history[i].date === todayStr) { todayIndex = i; break; }
-    }
-    
-    var newRecord = { date: todayStr, breadth: parseFloat(breadth), flow: parseFloat(parseFloat(flowYi).toFixed(1)), indices: indicesData, source: 'observed' };
-    if (todayIndex >= 0) {
-      history[todayIndex] = newRecord;
-    } else {
-      history.push(newRecord);
-      if (history.length > 22) history = history.slice(-22); 
-    }
-    localStorage.setItem('marketSentimentHistory', JSON.stringify(history));
-    
-    initSentimentChart();
-  } catch(e) {}
+    var old=getMarketHistory(), index=old.findIndex(function(h){return h.date===rec.date;});
+    if(index>=0)old[index]=rec;else old.push(rec);
+    persistHistory(old); initSentimentChart();
+    setHistoryStatus('已保存 '+rec.date+' 收盘后采样（未核验广度接口日期），累计 '+getMarketHistory().length+' 天');
+  } catch(e){setHistoryStatus('保存失败：请检查浏览器存储空间');console.error(e);}
 }
 
 // ================= 市场资金雷达 =================
@@ -729,6 +777,8 @@ function fetchMarketRadar() {
         
         window._tempBreadth = breadth;
         window._tempIndices = indicesData;
+        radarSample = {run:marketRefreshId,ts:Date.now(),breadth:breadth,indices:indicesData};
+        tryRecordMarketHistory();
       }
     } catch(e) { console.error("Radar error", e); }
     
@@ -756,11 +806,11 @@ function fetchSentimentData() {
         document.getElementById('stMainFlow').style.color = flowYi > 0 ? 'var(--red)' : 'var(--green)';
         document.getElementById('stMainFlowDesc').textContent = flowYi > 0 ? '大单净流入' : '大单净流出';
         
-        setTimeout(function() {
-          if (window._tempBreadth !== undefined && window._tempIndices !== undefined) {
-             recordSentimentData(window._tempBreadth, flowYi, window._tempIndices);
-          }
-        }, 1000);
+        var flowDate = String(latest[0]||'').slice(0,10);
+        if(/^\d{4}-\d{2}-\d{2}$/.test(flowDate) && Number.isFinite(mainFlow)) {
+          flowSample={run:marketRefreshId,ts:Date.now(),date:flowDate,flow:Number(flowYi)};
+          tryRecordMarketHistory();
+        } else {setHistoryStatus('资金接口缺少有效行情日期：不写入');}
       }
     } catch(e) {}
     delete window[flowCb];
@@ -1506,6 +1556,8 @@ async function refreshAll() {
   if (!window.FundApi) { setStatus('error', '数据源未加载，请刷新'); return; }
 
   cleanOldCache();
+  marketRefreshId++; radarSample=null; flowSample=null;
+  setHistoryStatus('等待两路行情及收盘时间校验…');
   fetchMarketRadar();
   fetchSentimentData();
   initERPChart(); 
